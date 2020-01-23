@@ -73,11 +73,14 @@
     <Compile Include="SocketReciever\MessageRecievedEventArgs.cs" />
     <Compile Include="SocketReciever\QueueWithBlock.cs" />
     <Compile Include="SocketReciever\RemoteHost.cs" />
+    <Compile Include="SocketReciever\SerializedGetRequest.cs" />
     <Compile Include="SocketReciever\SerializedPostRequest.cs" />
     <Compile Include="SocketReciever\SocketClient.cs" />
     <Compile Include="SocketReciever\SocketClientState.cs" />
     <Compile Include="SocketReciever\SocketMessage.cs" />
     <Compile Include="SocketReciever\SocketMessageType.cs" />
+    <Compile Include="SocketReciever\SocketServer.cs" />
+    <Compile Include="SocketReciever\SocketServerState.cs" />
     <Compile Include="SslProtocolsExtensions.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -122,6 +122,16 @@ namespace Browser
 
                 var requestMessage = new SerializedPostRequest() { Content = strContent, Url = url };
                 var socketMes = new SocketMessage(JsonConvert.SerializeObject(requestMessage), SocketMessageType.Post);
+
+                var processes = Process.GetProcessesByName("ConsoleRequestSender");
+
+                if (processes.Length <= 0)
+                {
+                    var dirPath = Directory.GetCurrentDirectory();
+
+                    System.Diagnostics.Process.Start(Path.Combine(dirPath, "ConsoleRequestSender.exe"));
+
+                }
                 var socket = new SocketClient();
                 var sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0);
                 sock.Connect("8.8.8.8", 0);

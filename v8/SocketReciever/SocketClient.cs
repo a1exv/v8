@@ -18,7 +18,7 @@ namespace v8.SocketReciever
 
         private SocketClientState _state;
 
-        private Socket _mainSocket;
+        public Socket _mainSocket;
 
         private Thread _messageThread;
 
@@ -66,6 +66,7 @@ namespace v8.SocketReciever
                 _mainSocket = new Socket(endPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
                 _connecting = true;
                 _mainSocket.Connect(endPoint);
+                
                 _connecting = false;
 
                 OnStateChanged(SocketClientState.Connected);
@@ -84,6 +85,7 @@ namespace v8.SocketReciever
             catch (Exception ex)
             {
                 Console.WriteLine(ex.StackTrace);
+                throw ex;
             }
             finally
             {
@@ -175,6 +177,7 @@ namespace v8.SocketReciever
                 {
                     OnStateChanged(SocketClientState.Disconnected);
                 }
+                throw ex;
             }
         }
 

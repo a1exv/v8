@@ -17,7 +17,8 @@ using SoftMarket.Globals.Forms;
 using SoftMarket.Devices.BankTerminals;
 using v8.Models;
 using System.Security.Cryptography.X509Certificates;
-
+using v8.SocketReciever;
+using System.Net.Sockets;
 
 namespace SoftMarket.Devices.BankTerminals
 {
@@ -371,158 +372,333 @@ namespace SoftMarket.Devices.BankTerminals
 
 
                 string apiKey = _apiKey;
-                using (var client = new WebClient())
+
+                var processes = Process.GetProcessesByName("ConsoleRequestSender");
+
+                if (processes.Length <= 0)
+                {
+                    var dirPath = Directory.GetCurrentDirectory();
+
+                    System.Diagnostics.Process.Start(Path.Combine(dirPath, "ConsoleRequestSender.exe"));
+                }
+
+                int launchTimeOut = 5000;
+                while (Process.GetProcessesByName("ConsoleRequestSender").Length == 0&&launchTimeOut>=0)
+                {
+                    Thread.Sleep(200);
+                    launchTimeOut -= 200;
+                }
+                if (launchTimeOut < 0)
+                {
+                    throw new DeviceException("Не удалось запустить сервер для отправки запросов. Операция отменена. ");
+                }
+
+
+
+
+                //place order
+
+                var placeOrderLogStart = "start placing order \n";
+                logStream.Write(Encoding.Default.GetBytes(placeOrderLogStart), 0, placeOrderLogStart.Length);
+
+                var url = _apiLink;
+                var requestMessage = new SerializedPostRequest() { Content = JsonConvert.SerializeObject(order), Url = url };
+                var socketMes = new SocketMessage(JsonConvert.SerializeObject(requestMessage), SocketMessageType.Post);
+
+                 socket = new SocketClient();
+                var sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0);
+                sock.Connect("8.8.8.8", 0);
+                var localhost = sock.LocalEndPoint.ToString().Split(':')[0];
+                socket.Connect(localhost, 65433);
+                var server = new SocketServer();
+                server.ReceivedMessage += RecievedMessage;
+                server.Run(65449);
+
+                new Thread(() =>
+                {
+                    Thread.CurrentThread.IsBackground = true;
+                    var jsonSocketMes = JsonConvert.SerializeObject(socketMes);
+                    logStream.Write(Encoding.Default.GetBytes(jsonSocketMes), 0, jsonSocketMes.Length);
+                    socket.SendMessage(Encoding.UTF8.GetBytes(jsonSocketMes));
+                }).Start();
+                AwaitResponse();
+                
+                var jsonResponse = Message.Message;
+                var response = JsonConvert.DeserializeObject<string>(jsonResponse);
+                var resultContentPlaceOrder = JsonConvert.DeserializeObject<PlaceOrderResponse>(response);
+                LaunchBrowser(resultContentPlaceOrder.PaymentUri);
+
+                var placeOrderLogEnd = "order placed \n ";
+                logStream.Write(Encoding.Default.GetBytes(placeOrderLogEnd), 0, placeOrderLogEnd.Length);
+                Message = null;
+                IsRecievedMessage = false;
+
+
+
+
+
+
+
+                //check status 
+
+                var statusUrl = _apiLink + "/{0}/status";
+                logStream.Write(Encoding.UTF8.GetBytes(statusUrl), 0, statusUrl.Length);
+               // PlaceOrderResponse response = JsonConvert.DeserializeObject<PlaceOrderResponse>(response);
+                int timeout = _timeout * 1000;
+                int requestFrequency = timeout / _requestCount;
+                string orderStatus = "";
+                while (timeout > 0)
+                {
+                    Thread.Sleep(requestFrequency);
+                    timeout -= requestFrequency;
+                    var checkStatusRequest = new SerializedGetRequest() { Url = String.Format(statusUrl, resultContentPlaceOrder.OrderId) };
+                    var checkStatusSocketMess = new SocketMessage(JsonConvert.SerializeObject(checkStatusRequest), SocketMessageType.Get);
+                    WriteInLog(JsonConvert.SerializeObject(checkStatusRequest));
+                    WriteInLog(IsRecievedMessage.ToString());
+                    new Thread(() =>
+                    {
+                        Thread.CurrentThread.IsBackground = true;
+                        socket.SendMessage(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(checkStatusSocketMess)));
+                    }).Start();
+                    AwaitResponse();
+                    jsonResponse = Message.Message;
+                    response = JsonConvert.DeserializeObject<string>(jsonResponse);
+                    StatusResponse status =
+                                    JsonConvert.DeserializeObject<StatusResponse>(response);
+                    if (status.Status.Equals("confirmed"))
+                    {
+                        orderStatus = status.Status;
+
+                        //confirmation
+
+                        var confirmationLogStart = "start confirmation \n";
+                        logStream.Write(Encoding.Default.GetBytes(confirmationLogStart), 0, confirmationLogStart.Length);
+
+                        HttpStatusCode confirmationResult = new HttpStatusCode();
+                        while (timeout > 0)
+                        {
+                            confirmationResult = ConfirmOrder(resultContentPlaceOrder.OrderId);
+                            if (confirmationResult == HttpStatusCode.OK)
+                            {
+
+                                var confirmationLogEndSuccess = "end confirmation with success \n";
+                                logStream.Write(Encoding.Default.GetBytes(confirmationLogEndSuccess), 0, confirmationLogEndSuccess.Length);
+                                break;
+                            }
+                            else
+                            {
+                                timeout -= requestFrequency;
+                            }
+                        }
+                        if (confirmationResult != HttpStatusCode.OK)
+                        {
+                            var confirmationLogEndFail = "end confirmation with failure, status code = " + confirmationResult.ToString() + " \n";
+                            logStream.Write(Encoding.Default.GetBytes(confirmationLogEndFail), 0, confirmationLogEndFail.Length);
+                            throw new DeviceException("Подтверждение не получено");
+                        }
+                        else if (confirmationResult == HttpStatusCode.OK)
+                        {
+                            var confirmationLogEndSuccess = "end confirmation with success \n";
+                            logStream.Write(Encoding.Default.GetBytes(confirmationLogEndSuccess), 0, confirmationLogEndSuccess.Length);
+
+                            break;
+
+                        }
+
+
+                    }
+                    else
+                    {
+                        var processes1 = Process.GetProcessesByName("QRS");
+
+                        if (processes1.Length <= 0)
+                        {
+                            timeout = -1;
+
+                            break;
+
+                        }
+                    }
+                    orderStatus = status.Status;
+                    Message = null;
+                    IsRecievedMessage = false;
+
+                }
+                foreach (var process in Process.GetProcessesByName("QRS"))
+                {
+                    process.CloseMainWindow();
+                    process.Kill();
+                }
+
+                if (orderStatus.Equals("confirmed"))
+                {
+                    logStream.Write(Encoding.UTF8.GetBytes("ORDER IS PREPARED"), 0, 17);
+                    logStream.Close();
+                }
+                else
                 {
 
-                    // Set protocol
-                    //var setProtocolLog = "set rpotocol to tls 1.2 \n";
-                    //logStream.Write(Encoding.Default.GetBytes(setProtocolLog), 0, setProtocolLog.Length);
-                    //ServicePointManager.SecurityProtocol = SecurityProtocolTypeExtensions.Tls12;
+                    CancelOrder(resultContentPlaceOrder.OrderId);
 
-                    //place order
-
-                    var placeOrderLogStart = "start placing order \n";
-                    logStream.Write(Encoding.Default.GetBytes(placeOrderLogStart), 0, placeOrderLogStart.Length);
-
-                    var url = _apiLink;
-                    logStream.Write(Encoding.Default.GetBytes(url+"\n"), 0, url.Length+1);
-                    var content = JsonConvert.SerializeObject(order);
-                    logStream.Write(Encoding.Default.GetBytes(content+"\n"), 0, content.Length+1);
-                    var bytes = Encoding.Default.GetBytes(content);
+                    throw new DeviceException("Операция не проведена");
+                }
 
 
 
 
-                    client.Headers[HttpRequestHeader.Accept] = "application/json";
-                    client.Headers[HttpRequestHeader.ContentType] = "application/json";
-                    client.Headers.Add("x-api-key", apiKey);
+
+                //using (var client = new WebClient())
+                //{
+
+                //    // Set protocol
+                //    //var setProtocolLog = "set rpotocol to tls 1.2 \n";
+                //    //logStream.Write(Encoding.Default.GetBytes(setProtocolLog), 0, setProtocolLog.Length);
+                //    //ServicePointManager.SecurityProtocol = SecurityProtocolTypeExtensions.Tls12;
+
+                //    //place order
+
+                //    var placeOrderLogStart = "start placing order \n";
+                //    logStream.Write(Encoding.Default.GetBytes(placeOrderLogStart), 0, placeOrderLogStart.Length);
+
+                //    var url = _apiLink;
+                //    logStream.Write(Encoding.Default.GetBytes(url+"\n"), 0, url.Length+1);
+                //    var content = JsonConvert.SerializeObject(order);
+                //    logStream.Write(Encoding.Default.GetBytes(content+"\n"), 0, content.Length+1);
+                //    var bytes = Encoding.Default.GetBytes(content);
+
+
+
+
+                //    client.Headers[HttpRequestHeader.Accept] = "application/json";
+                //    client.Headers[HttpRequestHeader.ContentType] = "application/json";
+                //    client.Headers.Add("x-api-key", apiKey);
 
 
 
                       
-                    byte[] result = client.UploadData(url, "POST", bytes);
-                    string resultContent = Encoding.UTF8.GetString(result, 0, result.Length);
-                    var resultContentPlaceOrder = JsonConvert.DeserializeObject<PlaceOrderResponse>(resultContent);
-                    LaunchBrowser(resultContentPlaceOrder.PaymentUri);
+                //    byte[] result = client.UploadData(url, "POST", bytes);
+                //    string resultContent = Encoding.UTF8.GetString(result, 0, result.Length);
+                //    var resultContentPlaceOrder = JsonConvert.DeserializeObject<PlaceOrderResponse>(resultContent);
+                //    LaunchBrowser(resultContentPlaceOrder.PaymentUri);
 
-                    var placeOrderLogEnd = "order placed \n ";
-                    logStream.Write(Encoding.Default.GetBytes(placeOrderLogEnd), 0, placeOrderLogEnd.Length);
-
-
-                    //check status 
-
-                    var statusUrl = _apiLink + "/{0}/status";
-                    logStream.Write(Encoding.UTF8.GetBytes(statusUrl), 0, statusUrl.Length);
-                    PlaceOrderResponse response = JsonConvert.DeserializeObject<PlaceOrderResponse>(resultContent);
-                    int timeout = _timeout * 1000;
-                    int requestFrequency = timeout / _requestCount;
-                    string orderStatus = "";
-                    while (timeout > 0)
-                    {
-                        Thread.Sleep(requestFrequency);
-                        timeout -= requestFrequency;
-                        var request = (HttpWebRequest)WebRequest.Create(String.Format(statusUrl, response.OrderId));
-                        request.Headers.Add("x-api-key", apiKey);
-                        request.ContentType = "application/json";
-                        //request.Headers.Add("Content-Type", "application/json");
-                        HttpWebResponse statusResponse = (HttpWebResponse)request.GetResponse();
-
-                        using (Stream stream = statusResponse.GetResponseStream())
-                        {
-                            using (StreamReader reader = new StreamReader(stream))
-                            {
-                                var statusResponseString = reader.ReadToEnd();
-                                logStream.Write(Encoding.UTF8.GetBytes(statusResponseString), 0,
-                                    statusResponseString.Length);
-                                StatusResponse status =
-                                    JsonConvert.DeserializeObject<StatusResponse>(statusResponseString);
-                                if (status.Status.Equals("confirmed"))
-                                {
-                                    orderStatus = status.Status;
-
-                                    #region Confirmation 
+                //    var placeOrderLogEnd = "order placed \n ";
+                //    logStream.Write(Encoding.Default.GetBytes(placeOrderLogEnd), 0, placeOrderLogEnd.Length);
 
 
-                                    var confirmationLogStart = "start confirmation \n";
-                                    logStream.Write(Encoding.Default.GetBytes(confirmationLogStart), 0, confirmationLogStart.Length);
+                //    //check status 
+
+                //    var statusUrl = _apiLink + "/{0}/status";
+                //    logStream.Write(Encoding.UTF8.GetBytes(statusUrl), 0, statusUrl.Length);
+                //    PlaceOrderResponse response = JsonConvert.DeserializeObject<PlaceOrderResponse>(resultContent);
+                //    int timeout = _timeout * 1000;
+                //    int requestFrequency = timeout / _requestCount;
+                //    string orderStatus = "";
+                //    while (timeout > 0)
+                //    {
+                //        Thread.Sleep(requestFrequency);
+                //        timeout -= requestFrequency;
+                //        var request = (HttpWebRequest)WebRequest.Create(String.Format(statusUrl, response.OrderId));
+                //        request.Headers.Add("x-api-key", apiKey);
+                //        request.ContentType = "application/json";
+                //        //request.Headers.Add("Content-Type", "application/json");
+                //        HttpWebResponse statusResponse = (HttpWebResponse)request.GetResponse();
+
+                //        using (Stream stream = statusResponse.GetResponseStream())
+                //        {
+                //            using (StreamReader reader = new StreamReader(stream))
+                //            {
+                //                var statusResponseString = reader.ReadToEnd();
+                //                logStream.Write(Encoding.UTF8.GetBytes(statusResponseString), 0,
+                //                    statusResponseString.Length);
+                //                StatusResponse status =
+                //                    JsonConvert.DeserializeObject<StatusResponse>(statusResponseString);
+                //                if (status.Status.Equals("confirmed"))
+                //                {
+                //                    orderStatus = status.Status;
+
+                //                    #region Confirmation 
 
 
-                                    HttpStatusCode confirmationResult = new HttpStatusCode();
-                                    while (timeout > 0)
-                                    {
-                                        confirmationResult = ConfirmOrder(response.OrderId);
-                                        if (confirmationResult == HttpStatusCode.OK)
-                                        {
+                //                    var confirmationLogStart = "start confirmation \n";
+                //                    logStream.Write(Encoding.Default.GetBytes(confirmationLogStart), 0, confirmationLogStart.Length);
+
+
+                //                    HttpStatusCode confirmationResult = new HttpStatusCode();
+                //                    while (timeout > 0)
+                //                    {
+                //                        confirmationResult = ConfirmOrder(response.OrderId);
+                //                        if (confirmationResult == HttpStatusCode.OK)
+                //                        {
                                            
-                                            var confirmationLogEndSuccess = "end confirmation with success \n";
-                                            logStream.Write(Encoding.Default.GetBytes(confirmationLogEndSuccess), 0, confirmationLogEndSuccess.Length);
-                                            break;
-                                        }
-                                        else
-                                        {
-                                            timeout -= requestFrequency;
-                                        }
-                                    }
-                                    if (confirmationResult != HttpStatusCode.OK)
-                                    {
-                                        var confirmationLogEndFail = "end confirmation with failure, status code = "+confirmationResult.ToString()+" \n";
-                                        logStream.Write(Encoding.Default.GetBytes(confirmationLogEndFail), 0, confirmationLogEndFail.Length);
-                                        throw new DeviceException("Подтверждение не получено");
-                                    }
-                                    else if(confirmationResult == HttpStatusCode.OK)
-                                    {
-                                        var confirmationLogEndSuccess = "end confirmation with success \n";
-                                        logStream.Write(Encoding.Default.GetBytes(confirmationLogEndSuccess), 0, confirmationLogEndSuccess.Length);
+                //                            var confirmationLogEndSuccess = "end confirmation with success \n";
+                //                            logStream.Write(Encoding.Default.GetBytes(confirmationLogEndSuccess), 0, confirmationLogEndSuccess.Length);
+                //                            break;
+                //                        }
+                //                        else
+                //                        {
+                //                            timeout -= requestFrequency;
+                //                        }
+                //                    }
+                //                    if (confirmationResult != HttpStatusCode.OK)
+                //                    {
+                //                        var confirmationLogEndFail = "end confirmation with failure, status code = "+confirmationResult.ToString()+" \n";
+                //                        logStream.Write(Encoding.Default.GetBytes(confirmationLogEndFail), 0, confirmationLogEndFail.Length);
+                //                        throw new DeviceException("Подтверждение не получено");
+                //                    }
+                //                    else if(confirmationResult == HttpStatusCode.OK)
+                //                    {
+                //                        var confirmationLogEndSuccess = "end confirmation with success \n";
+                //                        logStream.Write(Encoding.Default.GetBytes(confirmationLogEndSuccess), 0, confirmationLogEndSuccess.Length);
 
-                                        break;
+                //                        break;
 
-                                    }
-
-
-
-
-                                    #endregion Confirmation
-                                }
-                                else
-                                {
-                                    var processes = Process.GetProcessesByName("QRS");
-
-                                    if (processes.Length <= 0)
-                                    {
-                                        timeout = -1;
-
-                                        break;
-
-                                    }
-                                }
-
-                                orderStatus = status.Status;
-                            }
-                        }
-                    }
-
-                    foreach (var process in Process.GetProcessesByName("QRS"))
-                    {
-                        process.CloseMainWindow();
-                        process.Kill();
-                    }
-
-                    if (orderStatus.Equals("confirmed"))
-                    {
-                        logStream.Write(Encoding.UTF8.GetBytes("ORDER IS PREPARED"), 0, 17);
-                        logStream.Close();
-                    }
-                    else
-                    {
-
-                        CancelOrder(response.OrderId);
-
-                        throw new DeviceException("Операция не проведена");
-                    }
+                //                    }
 
 
 
-                }
+
+                //                    #endregion Confirmation
+                //                }
+                //                else
+                //                {
+                //                    var processes = Process.GetProcessesByName("QRS");
+
+                //                    if (processes.Length <= 0)
+                //                    {
+                //                        timeout = -1;
+
+                //                        break;
+
+                //                    }
+                //                }
+
+                //                orderStatus = status.Status;
+                //            }
+                //        }
+                //    }
+
+                //    foreach (var process in Process.GetProcessesByName("QRS"))
+                //    {
+                //        process.CloseMainWindow();
+                //        process.Kill();
+                //    }
+
+                //    if (orderStatus.Equals("confirmed"))
+                //    {
+                //        logStream.Write(Encoding.UTF8.GetBytes("ORDER IS PREPARED"), 0, 17);
+                //        logStream.Close();
+                //    }
+                //    else
+                //    {
+
+                //        CancelOrder(response.OrderId);
+
+                //        throw new DeviceException("Операция не проведена");
+                //    }
+
+
+
+                //}
 
 
             }
@@ -537,6 +713,16 @@ namespace SoftMarket.Devices.BankTerminals
             finally
             {
                 logStream.Close();
+                foreach (var process in Process.GetProcessesByName("ConsoleRequestSender"))
+                {
+                    process.CloseMainWindow();
+                    process.Kill();
+                }
+                foreach (var process in Process.GetProcessesByName("QRS"))
+                {
+                    process.CloseMainWindow();
+                    process.Kill();
+                }
             }
 
             return new PaymentParameters(summa, "", "", "", _bankName, transactionType);
@@ -585,7 +771,7 @@ namespace SoftMarket.Devices.BankTerminals
             
         }
 
-        
+        #endregion Browser
 
         public void CancelOrder(string orderId)
         {
@@ -600,19 +786,17 @@ namespace SoftMarket.Devices.BankTerminals
             //    byte[] result = client.UploadData(fullUrl, "POST", new byte[0]);
 
             //}
+            var cancelOrderRequest = new SerializedPostRequest() { Content = "", Url = fullUrl };
+            var cancelOrderSocketMess = new SocketMessage(JsonConvert.SerializeObject(cancelOrderRequest), SocketMessageType.Post);
 
-            HttpWebRequest webRequest = (HttpWebRequest)WebRequest.Create(fullUrl);
-            webRequest.Method = "POST";
-            webRequest.ContentType = "application/json";
-            webRequest.Headers.Add("x-api-key", apiKey);
-
-            using (Stream str = webRequest.GetRequestStream())
+            new Thread(() =>
             {
-                str.Write(new byte[0], 0, 0);
-
-            }
-            HttpWebResponse webResponse = (HttpWebResponse)webRequest.GetResponse();
-            if (webResponse.StatusCode == HttpStatusCode.OK)
+                Thread.CurrentThread.IsBackground = true;
+                socket.SendMessage(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(cancelOrderSocketMess)));
+            }).Start();
+            AwaitResponse();
+            var jsonResponse = Message.Message;
+            if (jsonResponse.Contains("OK"))
             {
                 string filepath = "@debug.txt";
                 var stream = File.OpenWrite(filepath);
@@ -621,32 +805,152 @@ namespace SoftMarket.Devices.BankTerminals
             }
             else
             {
-
                 string filepath = "@debug.txt";
                 var stream = File.OpenWrite(filepath);
-                stream.Write(Encoding.UTF8.GetBytes("smth goes wrong"), 0, 14);
+                stream.Write(Encoding.UTF8.GetBytes("smth goes wrong during cancellation"), 0, 20);
                 stream.Close();
             }
+            Message = null;
+            IsRecievedMessage = false;
+
+
+            //HttpWebRequest webRequest = (HttpWebRequest)WebRequest.Create(fullUrl);
+            //webRequest.Method = "POST";
+            //webRequest.ContentType = "application/json";
+            //webRequest.Headers.Add("x-api-key", apiKey);
+
+            //using (Stream str = webRequest.GetRequestStream())
+            //{
+            //    str.Write(new byte[0], 0, 0);
+
+            //}
+            //HttpWebResponse webResponse = (HttpWebResponse)webRequest.GetResponse();
+            //if (webResponse.StatusCode == HttpStatusCode.OK)
+            //{
+            //    string filepath = "@debug.txt";
+            //    var stream = File.OpenWrite(filepath);
+            //    stream.Write(Encoding.UTF8.GetBytes("canceled"), 0, 8);
+            //    stream.Close();
+            //}
+            //else
+            //{
+
+            //    string filepath = "@debug.txt";
+            //    var stream = File.OpenWrite(filepath);
+            //    stream.Write(Encoding.UTF8.GetBytes("smth goes wrong"), 0, 14);
+            //    stream.Close();
+            //}
         }
 
         public HttpStatusCode ConfirmOrder(string orderId)
         {
             var confirmUrl = _apiLink + "/{0}/confirm";
             var fullUrl = String.Format(confirmUrl, orderId);
-            HttpWebRequest webRequest = (HttpWebRequest)WebRequest.Create(fullUrl);
-            webRequest.Method = "POST";
-            webRequest.ContentType = "application/json";
-            webRequest.Headers.Add("x-api-key", _apiKey);
-            using (Stream str = webRequest.GetRequestStream())
+
+            var confirmOrderRequest = new SerializedPostRequest() { Content = "", Url = fullUrl };
+            var confirmOrderSocketMess = new SocketMessage(JsonConvert.SerializeObject(confirmOrderRequest), SocketMessageType.Post);
+
+            new Thread(() =>
             {
-                str.Write(new byte[0], 0, 0);
+                Thread.CurrentThread.IsBackground = true;
+                socket.SendMessage(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(confirmOrderSocketMess)));
+            }).Start();
+            AwaitResponse();
+            var jsonResponse = Message.Message;
+            if (jsonResponse.Contains("OK"))
+            {
+                string filepath = "@debug.txt";
+                var stream = File.OpenWrite(filepath);
+                stream.Write(Encoding.UTF8.GetBytes("confirmed"), 0, 8);
+                stream.Close();
+                return HttpStatusCode.OK;
+            }
+            else { return HttpStatusCode.BadRequest; }
+            //HttpWebRequest webRequest = (HttpWebRequest)WebRequest.Create(fullUrl);
+            //webRequest.Method = "POST";
+            //webRequest.ContentType = "application/json";
+            //webRequest.Headers.Add("x-api-key", _apiKey);
+            //using (Stream str = webRequest.GetRequestStream())
+            //{
+            //    str.Write(new byte[0], 0, 0);
+
+            //}
+            //HttpWebResponse webResponse = (HttpWebResponse)webRequest.GetResponse();
+            //return webResponse.StatusCode;
+
+
+           
+        }
+
+
+        public  void AwaitResponse(int timeout = 0)
+        {
+            if (timeout == 0)
+            {
+                timeout = 10000;
+            }
+
+
+
+            while (!IsRecievedMessage && timeout >= 0)
+            {
+                Thread.Sleep(1000);
+                timeout -= 1000;
+            }
+            if (!IsRecievedMessage)
+            {
+                throw new Exception("fail to send response");
+            }
+            return;
+
+
+        }
+
+        public static SocketClient socket { get; set; }
+        public static bool IsRecievedMessage { get; set; }
+        public static SocketMessage Message { get; set; }
+
+
+        private static void RecievedMessage(object sender, MessageReceivedEventArgs e)
+        {
+            try
+            {
+                var message = Encoding.UTF8.GetString(e.Message, 0, e.Message.Length);
+                var socketMessage = JsonConvert.DeserializeObject<SocketMessage>(message);
+
+
+                switch (socketMessage.Type)
+                {
+
+                    case SocketMessageType.WebResponse:
+                        Message = socketMessage;
+                        IsRecievedMessage = true;
+                        break;
+                }
 
             }
-            HttpWebResponse webResponse = (HttpWebResponse)webRequest.GetResponse();
-            return webResponse.StatusCode;
+            catch (Exception ex)
+            {
+                string filepath = "@debug.txt";
+                var stream = File.OpenWrite(filepath);
+                var logstring = "smth goes wrong during getting response from response sender";
+                stream.Write(Encoding.UTF8.GetBytes(logstring), 0, logstring.Length);
+                stream.Write(Encoding.UTF8.GetBytes(ex.StackTrace), 0, ex.StackTrace.Length);
+                stream.Close();
+            }
+        }
 
+        private static void WriteInLog(string log)
+        {
+            try
+            {
+                File.AppendAllText("@log.txt", log + "\n", Encoding.Default);
+                // logstream.Write(Encoding.Default.GetBytes(log + '\n'), 0, log.Length + 1);
+            }
+            catch (Exception ex)
+            {
 
-            #endregion Browser
+            }
         }
     }
 }

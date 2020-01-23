@@ -43,13 +43,20 @@ namespace ConsoleRequestSender.SocketServerReciever
 
         public void Run(int port)
         {
-            if (State == SocketServerState.Stopped)
+            try
             {
-                _port = port;
-                OnStateChanged(SocketServerState.Starting);
-                var thread = new Thread(Listening);
-                thread.IsBackground = false;
-                thread.Start();
+                if (State == SocketServerState.Stopped)
+                {
+                    _port = port;
+                    OnStateChanged(SocketServerState.Starting);
+                    var thread = new Thread(Listening);
+                    thread.IsBackground = false;
+                    thread.Start();
+                }
+            }
+            catch(Exception ex)
+            {
+                throw ex;
             }
         }
 
@@ -87,7 +94,7 @@ namespace ConsoleRequestSender.SocketServerReciever
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.StackTrace);
+                throw ex;
             }
             finally
             {
@@ -101,6 +108,7 @@ namespace ConsoleRequestSender.SocketServerReciever
                     }
                 }
                 hosts.Clear();
+                _mainSocket.Close();
             }
         }
 
@@ -130,7 +138,7 @@ namespace ConsoleRequestSender.SocketServerReciever
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.StackTrace);
+                throw ex;
             }
             finally
             {
@@ -156,6 +164,7 @@ namespace ConsoleRequestSender.SocketServerReciever
             if (handler != null)
             {
                 handler(this, new MessageReceivedEventArgs(host, message));
+                
             }
         }
 
